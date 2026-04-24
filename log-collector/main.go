@@ -125,7 +125,7 @@ const (
 // 建表 SQL 语句（源自 init.sql）
 const createTableSQL = `CREATE TABLE IF NOT EXISTS access_logs (
   id bigint NOT NULL AUTO_INCREMENT COMMENT '主键ID',
-  start_time timestamp NULL DEFAULT NULL COMMENT '请求开始时间',
+  start_time bigint NULL DEFAULT NULL COMMENT '请求开始时间(Unix epoch 秒)',
   trace_id varchar(64) NULL DEFAULT NULL COMMENT 'X-B3-TraceID 分布式追踪ID',
   authority varchar(128) NULL DEFAULT NULL COMMENT 'Host/Authority 域名',
   method varchar(16) NULL DEFAULT NULL COMMENT 'HTTP 方法 (GET/POST等)',
@@ -165,24 +165,38 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS access_logs (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='HTTP 访问日志表'`
 
-// 创建索引 SQL 语句列表
-var createIndexSQLs = []string{
-	"CREATE INDEX IF NOT EXISTS idx_start_time ON access_logs (start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_trace_id ON access_logs (trace_id)",
-	"CREATE INDEX IF NOT EXISTS idx_authority_time ON access_logs (authority, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_response_code_time ON access_logs (response_code, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_path ON access_logs (path(255))",
-	"CREATE INDEX IF NOT EXISTS idx_method_authority ON access_logs (method, authority)",
-	"CREATE INDEX IF NOT EXISTS idx_duration ON access_logs (duration DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_upstream_cluster ON access_logs (upstream_cluster, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_route_name ON access_logs (route_name, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_instance_id ON access_logs (instance_id, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_api ON access_logs (api, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_model ON access_logs (model, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_consumer ON access_logs (consumer, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_service ON access_logs (service, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_mcp_server ON access_logs (mcp_server, start_time DESC)",
-	"CREATE INDEX IF NOT EXISTS idx_mcp_tool ON access_logs (mcp_tool, start_time DESC)",
+// 创建索引定义（索引名 → CREATE INDEX 语句）
+// 使用标准 CREATE INDEX 语法，兼容 MySQL 8.0（不支持 IF NOT EXISTS）
+var createIndexDefs = []struct {
+	name string
+	sql  string
+}{
+	{"idx_start_time", "CREATE INDEX idx_start_time ON access_logs (start_time DESC)"},
+	{"idx_trace_id", "CREATE INDEX idx_trace_id ON access_logs (trace_id)"},
+	{"idx_authority_time", "CREATE INDEX idx_authority_time ON access_logs (authority, start_time DESC)"},
+	{"idx_response_code_time", "CREATE INDEX idx_response_code_time ON access_logs (response_code, start_time DESC)"},
+	{"idx_path", "CREATE INDEX idx_path ON access_logs (path(255))"},
+	{"idx_method_authority", "CREATE INDEX idx_method_authority ON access_logs (method, authority)"},
+	{"idx_duration", "CREATE INDEX idx_duration ON access_logs (duration DESC)"},
+	{"idx_upstream_cluster", "CREATE INDEX idx_upstream_cluster ON access_logs (upstream_cluster, start_time DESC)"},
+	{"idx_route_name", "CREATE INDEX idx_route_name ON access_logs (route_name, start_time DESC)"},
+	{"idx_instance_id", "CREATE INDEX idx_instance_id ON access_logs (instance_id, start_time DESC)"},
+	{"idx_api", "CREATE INDEX idx_api ON access_logs (api, start_time DESC)"},
+	{"idx_model", "CREATE INDEX idx_model ON access_logs (model, start_time DESC)"},
+	{"idx_consumer", "CREATE INDEX idx_consumer ON access_logs (consumer, start_time DESC)"},
+	{"idx_service", "CREATE INDEX idx_service ON access_logs (service, start_time DESC)"},
+	{"idx_mcp_server", "CREATE INDEX idx_mcp_server ON access_logs (mcp_server, start_time DESC)"},
+	{"idx_mcp_tool", "CREATE INDEX idx_mcp_tool ON access_logs (mcp_tool, start_time DESC)"},
+}
+
+// indexExists 检查 access_logs 表上是否已存在指定索引（兼容 MySQL 8.0）
+func indexExists(indexName string) bool {
+	var count int
+	err := db.QueryRow(
+		"SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'access_logs' AND index_name = ?",
+		indexName,
+	).Scan(&count)
+	return err == nil && count > 0
 }
 
 func main() {
@@ -267,25 +281,35 @@ func initDatabase() error {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
 		log.Println("[Init] ✓ Table 'access_logs' created successfully")
-
-		// 创建索引
-		for i, idxSQL := range createIndexSQLs {
-			_, err = db.Exec(idxSQL)
-			if err != nil {
-				// 索引创建失败可能是已存在，记录警告但不中断
-				log.Printf("[Init] ⚠ Index %d creation warning: %v", i+1, err)
-			} else {
-				log.Printf("[Init] ✓ Index %d/%d created", i+1, len(createIndexSQLs))
-			}
-		}
-		log.Printf("[Init] ✓ Database schema initialized successfully")
 	} else if err != nil {
 		return fmt.Errorf("failed to check table existence: %w", err)
 	} else {
 		log.Println("[Init] ✓ Table 'access_logs' already exists")
 	}
 
+	// 无论表是新建还是已存在，都检查并补建缺失的索引
+	ensureIndexes()
+
 	return nil
+}
+
+// ensureIndexes 检查并补建缺失的索引（兼容 MySQL 8.0，不使用 IF NOT EXISTS）
+func ensureIndexes() {
+	created, skipped := 0, 0
+	for i, idx := range createIndexDefs {
+		if indexExists(idx.name) {
+			skipped++
+			continue
+		}
+		_, err := db.Exec(idx.sql)
+		if err != nil {
+			log.Printf("[Init] ⚠ Index %d/%d creation warning (%s): %v", i+1, len(createIndexDefs), idx.name, err)
+		} else {
+			created++
+			log.Printf("[Init] ✓ Index %d/%d created: %s", i+1, len(createIndexDefs), idx.name)
+		}
+	}
+	log.Printf("[Init] ✓ Index check complete: %d created, %d already existed", created, skipped)
 }
 
 // 接收 Wasm 发来的日志
@@ -346,16 +370,18 @@ func flushLogs() {
 		// 37 个字段的占位符 (对齐 log-format.json + 监控元数据 + token字段)
 		valueStrings = append(valueStrings, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 
-		// 转换 RFC3339 时间为 MySQL datetime 格式
-		startTime := entry.StartTime
+		// 转换 RFC3339 时间为 Unix epoch 秒数（bigint 列，无时区问题）
+		var startTimeEpoch interface{}
 		if t, err := time.Parse(time.RFC3339, entry.StartTime); err == nil {
-			startTime = t.Format("2006-01-02 15:04:05")
+			startTimeEpoch = t.Unix()
+		} else {
+			startTimeEpoch = nil
 		}
 
 		// 按表结构顺序:37 个字段完整映射
 		valueArgs = append(valueArgs,
 			// 基础请求信息 (9字段)
-			startTime,           // start_time
+			startTimeEpoch,      // start_time (Unix epoch 秒)
 			entry.TraceID,       // trace_id
 			entry.Authority,     // authority
 			entry.Method,        // method
@@ -720,11 +746,11 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 	logs := []LogEntry{}
 	for rows.Next() {
 		var entry LogEntry
-		var startTime time.Time
+		var startTimeEpoch sql.NullInt64
 
 		err := rows.Scan(
 			// 基础请求信息
-			&startTime, &entry.TraceID, &entry.Authority, &entry.Method, &entry.Path,
+			&startTimeEpoch, &entry.TraceID, &entry.Authority, &entry.Method, &entry.Path,
 			&entry.Protocol, &entry.RequestID, &entry.UserAgent, &entry.XForwardedFor,
 			// 响应信息
 			&entry.ResponseCode, &entry.ResponseFlags, &entry.ResponseCodeDetails,
@@ -752,7 +778,9 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		entry.StartTime = startTime.Format(time.RFC3339)
+		if startTimeEpoch.Valid {
+			entry.StartTime = time.Unix(startTimeEpoch.Int64, 0).UTC().Format(time.RFC3339)
+		}
 		logs = append(logs, entry)
 	}
 	parseScanDuration := time.Since(parseScanStart)

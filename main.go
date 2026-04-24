@@ -35,9 +35,10 @@ func init() {
 
 // PluginConfig 定义插件配置 (对应 WasmPlugin 资源中的 pluginConfig)
 type PluginConfig struct {
-	CollectorServiceName string             `json:"collector_service_name"` // Collector 完整 FQDN，如 "log-collector.higress-system.svc.cluster.local"
-	CollectorPort       int64              `json:"collector_port"`    // Collector 端口，例如 8080
-	CollectorPath       string             `json:"collector_path"`    // 接收日志的 API 路径，例如 "/api/log"
+	CollectorServiceName string             `json:"collector_service_name"` // Collector 完整 FQDN，如 "log-collector.dns"
+	CollectorPort       int64              `json:"collector_port"`    // Collector 端口，例如 80
+	CollectorPath       string             `json:"collector_path"`    // 接收日志的 API 路径，例如 "/ingest"
+	InstanceID          string             `json:"instance_id"`       // 网关实例 ID（如 "i-xxx"），由管控面配置传入
 	CollectorClient     wrapper.HttpClient `json:"-"`                 // HTTP 客户端，用于发送日志
 }
 
@@ -121,8 +122,12 @@ func parseConfig(jsonConf gjson.Result, config *PluginConfig) error {
 	if config.CollectorPath == "" {
 		config.CollectorPath = "/"
 	}
+
+	// 从配置读取网关实例 ID（由管控面传入）
+	config.InstanceID = jsonConf.Get("instance_id").String()
 	
 	// 创建 HTTP 客户端用于发送日志
+	// 使用 FQDNCluster，服务名格式为 Higress 内部服务名（如 "log-collector.dns"）
 	log.Debugf("[db-log-pusher] creating cluster client: service=%s, port=%d", config.CollectorServiceName, config.CollectorPort)
 	config.CollectorClient = wrapper.NewClusterClient(wrapper.FQDNCluster{
 		FQDN: config.CollectorServiceName,
@@ -211,7 +216,7 @@ func onHttpResponseBody(ctx wrapper.HttpContext, config PluginConfig, body []byt
 	sni := getEnvoyProperty("requested_server_name", "")
 	
 	// 提取监控所需的元数据字段
-	instanceID := getInstanceID()
+	instanceID := getInstanceID(config)
 	apiName := getAPIName(ctx)
 	modelName := getModelName(ctx)
 	consumer := getConsumer()
@@ -474,8 +479,13 @@ func getEnvoyProperty(path string, defaultValue string) string {
 }
 
 // 获取实例ID
-func getInstanceID() string {
-	// 1. 从 Envoy 节点元数据获取 Pod 名称（这是最准确的网关实例标识）
+func getInstanceID(config PluginConfig) string {
+	// 优先使用管控面配置的网关实例 ID
+	if config.InstanceID != "" {
+		return config.InstanceID
+	}
+
+	// Fallback: 从 Envoy 节点元数据获取 Pod 名称
 	// Pod 名称格式通常是：higress-gateway-<hash>-<random>
 	podNameBytes, err := proxywasm.GetProperty([]string{"node", "metadata", "POD_NAME"})
 	if err == nil && len(podNameBytes) > 0 {

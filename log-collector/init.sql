@@ -18,7 +18,7 @@ CREATE TABLE `access_logs` (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键ID',
   
   -- 基础请求信息（9字段）
-  `start_time` timestamp NULL DEFAULT NULL COMMENT '请求开始时间',
+  `start_time` bigint NULL DEFAULT NULL COMMENT '请求开始时间(Unix epoch 秒)',
   `trace_id` varchar(64) NULL DEFAULT NULL COMMENT 'X-B3-TraceID 分布式追踪ID',
   `authority` varchar(128) NULL DEFAULT NULL COMMENT 'Host/Authority 域名',
   `method` varchar(16) NULL DEFAULT NULL COMMENT 'HTTP 方法 (GET/POST等)',
@@ -131,4 +131,4 @@ CREATE INDEX `idx_mcp_tool` ON `access_logs` (`mcp_tool`, `start_time` DESC);
 -- ================================================================
 -- 初始化完成提示
 -- ================================================================
-SELECT '✅ access_logs 表创建成功！包含 35 个字段 (27基础+8监控) + 16 个性能索引' AS status;
+SELECT '✅ access_logs 表创建成功！包含 35 个字段 (27基础+8监控) + 16 个性能索引 (start_time 为 bigint epoch 秒)' AS status;
