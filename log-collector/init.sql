@@ -72,8 +72,12 @@ CREATE TABLE `access_logs` (
   `output_tokens` bigint NULL DEFAULT NULL COMMENT '输出token数量',
   `total_tokens` bigint NULL DEFAULT NULL COMMENT '总token数量',
   
+  -- ===== 请求/响应体（2字段）=====
+  `request_body` mediumtext NULL DEFAULT NULL COMMENT '请求体（最大16MB）',
+  `response_body` mediumtext NULL DEFAULT NULL COMMENT '响应体（最大16MB）',
+  
   PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='HTTP 访问日志表（对齐 log-format.json 27字段 + 8监控元数据 + 3 token字段）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='HTTP 访问日志表（对齐 log-format.json 27字段 + 8监控元数据 + 3 token字段 + 2 body字段）';
 
 -- ================================================================
 -- 性能优化索引（根据查询场景设计）
@@ -131,4 +135,4 @@ CREATE INDEX `idx_mcp_tool` ON `access_logs` (`mcp_tool`, `start_time` DESC);
 -- ================================================================
 -- 初始化完成提示
 -- ================================================================
-SELECT '✅ access_logs 表创建成功！包含 35 个字段 (27基础+8监控) + 16 个性能索引 (start_time 为 bigint epoch 秒)' AS status;
+SELECT '✅ access_logs 表创建成功！包含 37 个字段 (27基础+8监控+2body) + 16 个性能索引 (start_time 为 bigint epoch 秒)' AS status;

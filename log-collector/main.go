@@ -73,6 +73,10 @@ type LogEntry struct {
 	InputTokens  int64 `json:"input_tokens"`  // 输入token数量
 	OutputTokens int64 `json:"output_tokens"` // 输出token数量
 	TotalTokens  int64 `json:"total_tokens"`  // 总token数量
+
+	// ===== 请求/响应体 (2个) =====
+	RequestBody  string `json:"req_body"`  // 请求体
+	ResponseBody string `json:"resp_body"` // 响应体
 }
 
 // 全局变量
@@ -162,6 +166,8 @@ const createTableSQL = `CREATE TABLE IF NOT EXISTS access_logs (
   input_tokens bigint NULL DEFAULT NULL COMMENT '输入token数量',
   output_tokens bigint NULL DEFAULT NULL COMMENT '输出token数量',
   total_tokens bigint NULL DEFAULT NULL COMMENT '总token数量',
+  request_body mediumtext NULL DEFAULT NULL COMMENT '请求体（最大16MB）',
+  response_body mediumtext NULL DEFAULT NULL COMMENT '响应体（最大16MB）',
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='HTTP 访问日志表'`
 
@@ -367,8 +373,8 @@ func flushLogs() {
 	valueArgs := []interface{}{}
 
 	for _, entry := range chunk {
-		// 37 个字段的占位符 (对齐 log-format.json + 监控元数据 + token字段)
-		valueStrings = append(valueStrings, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		// 39 个字段的占位符 (对齐 log-format.json + 监控元数据 + token字段 + body字段)
+		valueStrings = append(valueStrings, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 
 		// 转换 RFC3339 时间为 Unix epoch 秒数（bigint 列，无时区问题）
 		var startTimeEpoch interface{}
@@ -378,7 +384,7 @@ func flushLogs() {
 			startTimeEpoch = nil
 		}
 
-		// 按表结构顺序:37 个字段完整映射
+		// 按表结构顺序:39 个字段完整映射
 		valueArgs = append(valueArgs,
 			// 基础请求信息 (9字段)
 			startTimeEpoch,      // start_time (Unix epoch 秒)
@@ -426,11 +432,14 @@ func flushLogs() {
 			entry.InputTokens,  // input_tokens
 			entry.OutputTokens, // output_tokens
 			entry.TotalTokens,  // total_tokens
+			// ===== 请求/响应体 (2字段) =====
+			entry.RequestBody,  // request_body
+			entry.ResponseBody, // response_body
 		)
-		// 总计: 9+3+3+5+2+2+2+8+3 = 37 字段
+		// 总计: 9+3+3+5+2+2+2+8+3+2 = 39 字段
 	}
 
-	// 构建 INSERT 语句 (37个字段,对齐 log-format.json + 监控元数据 + token字段)
+	// 构建 INSERT 语句 (39个字段,对齐 log-format.json + 监控元数据 + token字段 + body字段)
 	stmt := fmt.Sprintf(`INSERT INTO access_logs (
 		start_time, trace_id, authority, method, path, protocol, request_id, user_agent, x_forwarded_for,
 		response_code, response_flags, response_code_details,
@@ -441,7 +450,8 @@ func flushLogs() {
 		istio_policy_status,
 		ai_log,
 		instance_id, api, model, consumer, route, service, mcp_server, mcp_tool,
-		input_tokens, output_tokens, total_tokens
+		input_tokens, output_tokens, total_tokens,
+		request_body, response_body
 	) VALUES %s`, strings.Join(valueStrings, ","))
 
 	// 执行写入
@@ -706,7 +716,7 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[Query] Sorting: sort_by=%s, sort_order=%s", sortBy, sortOrder)
 
-	// 构建查询 SQL（查询所有 37 个字段）
+	// 构建查询 SQL（查询所有 39 个字段）
 	querySQL := fmt.Sprintf(`
 		SELECT start_time, trace_id, authority, method, path, protocol, request_id, user_agent, x_forwarded_for,
 		       response_code, response_flags, response_code_details,
@@ -717,7 +727,8 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		       istio_policy_status,
 		       ai_log,
 		       instance_id, api, model, consumer, route, service, mcp_server, mcp_tool,
-		       input_tokens, output_tokens, total_tokens
+		       input_tokens, output_tokens, total_tokens,
+		       request_body, response_body
 		FROM access_logs %s ORDER BY %s %s LIMIT ? OFFSET ?`,
 		whereSQL, sortBy, sortOrder,
 	)
@@ -741,12 +752,14 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	log.Printf("[Query] SELECT executed (duration=%v)", queryExecDuration)
 
-	// 解析查询结果（读取所有 37 个字段）
+	// 解析查询结果（读取所有 39 个字段）
 	parseScanStart := time.Now()
 	logs := []LogEntry{}
 	for rows.Next() {
 		var entry LogEntry
 		var startTimeEpoch sql.NullInt64
+		var requestBody sql.NullString
+		var responseBody sql.NullString
 
 		err := rows.Scan(
 			// 基础请求信息
@@ -772,6 +785,8 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 			&entry.Route, &entry.Service, &entry.MCPServer, &entry.MCPTool,
 			// ===== Token使用统计 (3字段) =====
 			&entry.InputTokens, &entry.OutputTokens, &entry.TotalTokens,
+			// ===== 请求/响应体 (2字段) =====
+			&requestBody, &responseBody,
 		)
 		if err != nil {
 			log.Printf("[Query] Error scanning row: %v", err)
@@ -780,6 +795,12 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 
 		if startTimeEpoch.Valid {
 			entry.StartTime = time.Unix(startTimeEpoch.Int64, 0).UTC().Format(time.RFC3339)
+		}
+		if requestBody.Valid {
+			entry.RequestBody = requestBody.String
+		}
+		if responseBody.Valid {
+			entry.ResponseBody = responseBody.String
 		}
 		logs = append(logs, entry)
 	}
