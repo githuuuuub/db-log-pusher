@@ -2,7 +2,9 @@
 
 `db-log-pusher` 是一个 WASM 插件，用于收集 HTTP 请求/响应日志，并将这些日志推送到外部收集器服务 (`db-log-collector`) 进行存储和分析。这两个组件共同构成了完整的日志收集解决方案。
 
-> **Higress 集成方式**：如需集成到 Higress，将本仓库代码复制到 [Higress 插件目录](https://github.com/alibaba/higress/tree/main/plugins/wasm-go/extensions) 即可。
+> **官方镜像**：
+> - `db-log-pusher`: `oci://opensource-registry.cn-hangzhou.cr.aliyuncs.com/plugins/db-log-pusher:latest`
+> - `db-log-collector`: `opensource-registry.cn-hangzhou.cr.aliyuncs.com/higress-group/log-collector:latest`
 
 ## 一、db-log-pusher 功能特性
 
@@ -20,9 +22,10 @@
 
 | 参数 | 类型 | 必填 | 默认值 | 描述 |
 |------|------|------|--------|------|
-| `collector_service_name` | string | 是 | - | 收集器服务名称，格式为 FQDN，例如 "log-collector.higress-system.svc.cluster.local" |
-| `collector_port` | int | 是 | - | 收集器端口，例如 8080 |
-| `collector_path` | string | 否 | "/" | 接收日志的 API 路径，例如 "/api/log" |
+| `collector_service_name` | string | 是 | - | 收集器服务地址，需为网关数据面可解析、可访问的 FQDN 或服务地址，例如 `log-collector.higress-system.svc.cluster.local` |
+| `collector_port` | int | 是 | - | 收集器端口，例如 `80` |
+| `collector_path` | string | 否 | `/` | 接收日志的 API 路径，例如 `/ingest` |
+| `instance_id` | string | 否 | 自动从网关元数据读取 | 网关实例 ID，用于实例维度查询 |
 
 ## 收集的数据字段
 
@@ -80,6 +83,10 @@
 - `mcp_server`: MCP Server
 - `mcp_tool`: MCP Tool
 
+### 请求/响应体
+- `request_body`: 请求体
+- `response_body`: 响应体
+
 ## 配置方式
 
 ### 方式一：通过 Higress Console 配置（推荐）
@@ -95,9 +102,9 @@
 2. **填写插件信息**
    - **插件名称**: `db-log-pusher-plugin`
    - **插件描述**: `Collect HTTP request logs to database`
-   - **镜像地址**: `https://pysrc-test.oss-cn-beijing.aliyuncs.com/higress-plugin/plugin-20260323-101235.wasm`
+   - **镜像地址**: `oci://opensource-registry.cn-hangzhou.cr.aliyuncs.com/plugins/db-log-pusher:latest`
    - **插件执行阶段**: 选择 **认证阶段** (AUTHN)
-   - **插件执行优先级**: `1010` (范围 1~1000，值越大优先级越高)
+   - **插件执行优先级**: `1000`（需要高于 `ai-statistics`，同一阶段内数字越大，请求阶段越先执行、响应阶段越后执行）
    - **插件拉取策略**: 选择 **总是拉取** (Always)
 
 3. **配置路由和策略**
@@ -123,9 +130,9 @@
 
 #### 配置说明
 
-- **执行阶段**: 选择认证阶段（AUTHN），用于统计和日志收集
-- **优先级**: 设置为 1010，确保高于 `ai-statistics` 插件的优先级
-- **拉取策略**: 总是拉取最新版本，确保使用最新的插件功能
+- **执行阶段**: 选择认证阶段（AUTHN），使 `db-log-pusher` 在请求过滤器链中位于 `ai-statistics` 之前，从而在响应阶段晚于 `ai-statistics` 读取 AI 日志
+- **优先级**: 建议设置为 1000，确保同一阶段下高于 `ai-statistics`；同一阶段内数字越大，请求阶段越先执行、响应阶段越后执行
+- **拉取策略**: 使用 `latest` 时建议选择 Always，确保网关重新拉取仓库中当前的 `latest` 内容
 
 #### 验证配置
 
@@ -146,7 +153,6 @@ metadata:
   name: db-log-pusher-plugin
   namespace: higress-system
   annotations:
-    higress.io/redeploy-timestamp: "20260309-122804"
     higress.io/comment: "DB Log Pusher Plugin for collecting request logs"
     higress.io/wasm-plugin-title: "DB Log Pusher"
     higress.io/wasm-plugin-description: "Collect HTTP request logs to database"
@@ -154,13 +160,12 @@ metadata:
     higress.io/wasm-plugin-name: db-log-pusher
     higress.io/wasm-plugin-category: logging
 spec:
-  url: https://pysrc-test.oss-cn-beijing.aliyuncs.com/higress-plugin/plugin-20260323-101235.wasm
-  sha256: ""  # 建议填入 WASM 文件的 SHA256 校验和
+  url: oci://opensource-registry.cn-hangzhou.cr.aliyuncs.com/plugins/db-log-pusher:latest
   defaultConfigDisable: true  # 默认关闭全局配置
   failStrategy: FAIL_OPEN      # 失败时放行，避免影响业务
   imagePullPolicy: Always  # 总是拉取最新版本
-  phase: AUTHN           # 插件执行阶段，用于统计和日志收集
-  priority: 1010           # 优先级
+  phase: AUTHN           # 请求阶段早于默认阶段，响应阶段晚于默认阶段
+  priority: 1000         # 同阶段内请求越先执行，响应越后执行
   # 匹配规则：应用到所有服务
   matchRules:
     - configDisable: false
@@ -168,10 +173,11 @@ spec:
         - model-api-qwen3-plus-0
         - travel-assistant
       config:
-        log_level: info  # 必须在这里配置 log_level
+        log_level: info  # 可选
         collector_service_name: "log-collector.higress-system.svc.cluster.local"
         collector_port: 80
         collector_path: "/ingest"
+        # instance_id: "higress-gateway"  # 可选，不配置时会尝试从网关元数据读取
 ```
 
 应用配置：
@@ -191,61 +197,72 @@ kubectl apply -f db-log-pusher.yaml
 首先创建一个 MySQL 数据库用于存储日志数据。执行以下 SQL 创建表结构：
 
 ```sql
-CREATE DATABASE IF NOT EXISTS higress_poc DEFAULT CHARACTER SET utf8mb4;
+CREATE DATABASE IF NOT EXISTS higress_poc
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
 
 USE higress_poc;
 
-CREATE TABLE access_logs (
-    id BIGINT AUTO_INCREMENT PRIMARY KEY,
-    start_time DATETIME NOT NULL COMMENT '请求开始时间',
-    trace_id VARCHAR(255) COMMENT 'X-B3-TraceID',
-    authority VARCHAR(255) COMMENT 'Host/Authority',
-    method VARCHAR(10) COMMENT 'HTTP 方法',
-    path TEXT COMMENT '请求路径',
-    protocol VARCHAR(20) COMMENT 'HTTP 协议版本',
-    request_id VARCHAR(255) COMMENT 'X-Request-ID',
-    user_agent TEXT COMMENT 'User-Agent',
-    x_forwarded_for TEXT COMMENT 'X-Forwarded-For',
-    response_code INT COMMENT '响应状态码',
-    response_flags VARCHAR(100) COMMENT 'Envoy 响应标志',
-    response_code_details TEXT COMMENT '响应码详情',
-    bytes_received BIGINT COMMENT '接收字节数',
-    bytes_sent BIGINT COMMENT '发送字节数',
-    duration BIGINT COMMENT '请求总耗时 (ms)',
-    upstream_cluster VARCHAR(255) COMMENT '上游集群名',
-    upstream_host VARCHAR(255) COMMENT '上游主机',
-    upstream_service_time VARCHAR(50) COMMENT '上游服务耗时',
-    upstream_transport_failure_reason TEXT COMMENT '上游传输失败原因',
-    upstream_local_address VARCHAR(255) COMMENT '上游本地地址',
-    downstream_local_address VARCHAR(255) COMMENT '下游本地地址',
-    downstream_remote_address VARCHAR(255) COMMENT '下游远程地址',
-    route_name VARCHAR(255) COMMENT '路由名称',
-    requested_server_name VARCHAR(255) COMMENT 'SNI',
-    istio_policy_status VARCHAR(100) COMMENT 'Istio 策略状态',
-    ai_log JSON COMMENT 'WASM AI 日志',
-    instance_id VARCHAR(255) COMMENT '实例 ID',
-    api VARCHAR(255) COMMENT 'API 名称',
-    model VARCHAR(255) COMMENT '模型名称',
-    consumer VARCHAR(255) COMMENT '消费者信息',
-    route VARCHAR(255) COMMENT '路由名称',
-    service VARCHAR(255) COMMENT '服务名称',
-    mcp_server VARCHAR(255) COMMENT 'MCP Server',
-    mcp_tool VARCHAR(255) COMMENT 'MCP Tool',
-    input_tokens BIGINT COMMENT '输入 token 数量',
-    output_tokens BIGINT COMMENT '输出 token 数量',
-    total_tokens BIGINT COMMENT '总 token 数量',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_start_time (start_time),
-    INDEX idx_trace_id (trace_id),
-    INDEX idx_authority (authority),
-    INDEX idx_method (method),
-    INDEX idx_response_code (response_code),
-    INDEX idx_instance_id (instance_id),
-    INDEX idx_api (api),
-    INDEX idx_model (model),
-    INDEX idx_consumer (consumer),
-    INDEX idx_mcp_server (mcp_server)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Higress Access Logs';
+CREATE TABLE IF NOT EXISTS access_logs (
+  id bigint NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  start_time bigint NULL DEFAULT NULL COMMENT '请求开始时间(Unix epoch 秒)',
+  trace_id varchar(64) NULL DEFAULT NULL COMMENT 'X-B3-TraceID 分布式追踪ID',
+  authority varchar(128) NULL DEFAULT NULL COMMENT 'Host/Authority 域名',
+  method varchar(16) NULL DEFAULT NULL COMMENT 'HTTP 方法 (GET/POST等)',
+  path varchar(1024) NULL DEFAULT NULL COMMENT '请求路径',
+  protocol varchar(16) NULL DEFAULT NULL COMMENT 'HTTP 协议版本 (HTTP/1.1等)',
+  request_id varchar(64) NULL DEFAULT NULL COMMENT 'X-Request-ID 请求唯一标识',
+  user_agent varchar(512) NULL DEFAULT NULL COMMENT 'User-Agent 客户端信息',
+  x_forwarded_for varchar(256) NULL DEFAULT NULL COMMENT 'X-Forwarded-For 客户端真实IP',
+  response_code int NULL DEFAULT NULL COMMENT '响应状态码 (200/404/500等)',
+  response_flags varchar(64) NULL DEFAULT NULL COMMENT 'Envoy 响应标志',
+  response_code_details varchar(256) NULL DEFAULT NULL COMMENT '响应码详情',
+  bytes_received bigint NULL DEFAULT NULL COMMENT '接收字节数',
+  bytes_sent bigint NULL DEFAULT NULL COMMENT '发送字节数',
+  duration int NULL DEFAULT NULL COMMENT '请求总耗时(ms)',
+  upstream_cluster varchar(256) NULL DEFAULT NULL COMMENT '上游集群名',
+  upstream_host varchar(256) NULL DEFAULT NULL COMMENT '上游主机地址',
+  upstream_service_time varchar(32) NULL DEFAULT NULL COMMENT '上游服务耗时',
+  upstream_transport_failure_reason varchar(256) NULL DEFAULT NULL COMMENT '上游传输失败原因',
+  upstream_local_address varchar(64) NULL DEFAULT NULL COMMENT '上游本地地址',
+  downstream_local_address varchar(64) NULL DEFAULT NULL COMMENT '下游本地地址',
+  downstream_remote_address varchar(64) NULL DEFAULT NULL COMMENT '下游远程地址',
+  route_name varchar(256) NULL DEFAULT NULL COMMENT '路由名称',
+  requested_server_name varchar(256) NULL DEFAULT NULL COMMENT 'SNI 服务器名称',
+  istio_policy_status varchar(64) NULL DEFAULT NULL COMMENT 'Istio 策略状态',
+  ai_log json NULL DEFAULT NULL COMMENT 'WASM AI 日志 (JSON字符串)',
+  instance_id varchar(128) NULL DEFAULT NULL COMMENT '实例ID（Pod名称或容器ID）',
+  api varchar(128) NULL DEFAULT NULL COMMENT 'API名称（如 chat/completions）',
+  model varchar(128) NULL DEFAULT NULL COMMENT '模型名称（如 qwen-max）',
+  consumer varchar(256) NULL DEFAULT NULL COMMENT '消费者信息（用户名/API Key等）',
+  route varchar(256) NULL DEFAULT NULL COMMENT '路由名称（冗余字段，便于查询）',
+  service varchar(256) NULL DEFAULT NULL COMMENT '服务名称（上游服务）',
+  mcp_server varchar(256) NULL DEFAULT NULL COMMENT 'MCP服务器名称',
+  mcp_tool varchar(256) NULL DEFAULT NULL COMMENT 'MCP工具名称',
+  input_tokens bigint NULL DEFAULT NULL COMMENT '输入token数量',
+  output_tokens bigint NULL DEFAULT NULL COMMENT '输出token数量',
+  total_tokens bigint NULL DEFAULT NULL COMMENT '总token数量',
+  request_body mediumtext NULL DEFAULT NULL COMMENT '请求体（最大16MB）',
+  response_body mediumtext NULL DEFAULT NULL COMMENT '响应体（最大16MB）',
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='HTTP 访问日志表';
+
+CREATE INDEX idx_start_time ON access_logs (start_time DESC);
+CREATE INDEX idx_trace_id ON access_logs (trace_id);
+CREATE INDEX idx_authority_time ON access_logs (authority, start_time DESC);
+CREATE INDEX idx_response_code_time ON access_logs (response_code, start_time DESC);
+CREATE INDEX idx_path ON access_logs (path(255));
+CREATE INDEX idx_method_authority ON access_logs (method, authority);
+CREATE INDEX idx_duration ON access_logs (duration DESC);
+CREATE INDEX idx_upstream_cluster ON access_logs (upstream_cluster, start_time DESC);
+CREATE INDEX idx_route_name ON access_logs (route_name, start_time DESC);
+CREATE INDEX idx_instance_id ON access_logs (instance_id, start_time DESC);
+CREATE INDEX idx_api ON access_logs (api, start_time DESC);
+CREATE INDEX idx_model ON access_logs (model, start_time DESC);
+CREATE INDEX idx_consumer ON access_logs (consumer, start_time DESC);
+CREATE INDEX idx_service ON access_logs (service, start_time DESC);
+CREATE INDEX idx_mcp_server ON access_logs (mcp_server, start_time DESC);
+CREATE INDEX idx_mcp_tool ON access_logs (mcp_tool, start_time DESC);
 ```
 
 ### 2. 部署 Log Collector 服务
@@ -274,7 +291,7 @@ spec:
     spec:
       containers:
       - name: collector
-        image: registry.cn-shanghai.aliyuncs.com/daofeng/log-collector:latest
+        image: opensource-registry.cn-hangzhou.cr.aliyuncs.com/higress-group/log-collector:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
@@ -336,7 +353,7 @@ docker run -d \
   -p 8080:8080 \
   -e MYSQL_DSN="user:password@tcp(mysql-host:3306)/higress_poc?charset=utf8mb4&parseTime=True&loc=Local" \
   --restart unless-stopped \
-  registry.cn-shanghai.aliyuncs.com/daofeng/log-collector:latest
+  opensource-registry.cn-hangzhou.cr.aliyuncs.com/higress-group/log-collector:latest
 ```
 
 **参数说明：**
@@ -439,15 +456,23 @@ db-log-pusher/
 
 方式一：GitHub Actions 自动构建（推荐）
 
-推送标签即可触发自动构建：
+推送对应标签即可触发自动构建，并同时更新版本镜像和 `latest` 镜像：
 
 ```bash
-# 发布新版本
+# 构建 db-log-pusher 插件 OCI 镜像
+git tag v1.2.3
+git push origin v1.2.3
+
+# 构建 log-collector 服务镜像
 git tag collector-v1.2.3
 git push origin collector-v1.2.3
 ```
 
-镜像将自动推送到：`higress-registry.cn-hangzhou.cr.aliyuncs.com/log-collector/db-log-collector:1.2.3`
+镜像将自动推送到：
+- `oci://opensource-registry.cn-hangzhou.cr.aliyuncs.com/plugins/db-log-pusher:1.2.3`
+- `oci://opensource-registry.cn-hangzhou.cr.aliyuncs.com/plugins/db-log-pusher:latest`
+- `opensource-registry.cn-hangzhou.cr.aliyuncs.com/higress-group/log-collector:1.2.3`
+- `opensource-registry.cn-hangzhou.cr.aliyuncs.com/higress-group/log-collector:latest`
 
 方式二：本地手动构建
 
@@ -479,8 +504,9 @@ docker build -t your-registry/log-collector:latest .
 
 ### 插件执行顺序
 如果需要读取 `ai-statistics` 插件写入的 AI 日志，请确保：
-1. 在 WasmPlugin 资源中，`db-log-pusher` 的 phase 应该晚于 `ai-statistics`
-2. 或者在同一 phase 中，`db-log-pusher` 的 priority 应该低于 `ai-statistics`（数字越大优先级越高）
+1. 在 WasmPlugin 资源中，`db-log-pusher` 的 phase 应早于 `ai-statistics`，例如使用 AUTHN 阶段早于默认阶段
+2. 或者在同一 phase 中，`db-log-pusher` 的 priority 应高于 `ai-statistics`（数字越大，请求阶段越先执行、响应阶段越后执行）
+3. `db-log-pusher` 在响应阶段读取 AI 日志，而 HTTP 过滤器响应阶段会按请求过滤器链的反向顺序执行
 
 ### 性能考虑
 - 插件采用异步方式发送日志，不会阻塞主请求流程

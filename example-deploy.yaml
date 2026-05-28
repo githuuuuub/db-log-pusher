@@ -4,7 +4,6 @@ metadata:
   name: db-log-pusher-plugin
   namespace: higress-system
   annotations:
-    higress.io/redeploy-timestamp: "20260309-122804"
     higress.io/comment: "DB Log Pusher Plugin for collecting request logs"
     higress.io/wasm-plugin-title: "DB Log Pusher"
     higress.io/wasm-plugin-description: "Collect HTTP request logs to database"
@@ -12,13 +11,12 @@ metadata:
     higress.io/wasm-plugin-name: db-log-pusher
     higress.io/wasm-plugin-category: logging
 spec:
-  url: https://pysrc-test.oss-cn-beijing.aliyuncs.com/higress-plugin/plugin-20260309-122804.wasm
-  sha256: ""  # 建议填入WASM文件的SHA256校验和
+  url: oci://opensource-registry.cn-hangzhou.cr.aliyuncs.com/plugins/db-log-pusher:latest
   defaultConfigDisable: true  # 默认关闭全局配置
   failStrategy: FAIL_OPEN      # 失败时放行，避免影响业务
-  imagePullPolicy: Always  # 总是拉取最新版本
-  phase: AUTHN           # 插件执行阶段，用于统计和日志收集
-  priority: 1010           # 优先级
+  imagePullPolicy: Always  # 使用 latest 时建议总是拉取
+  phase: AUTHN             # 请求阶段早于默认阶段，响应阶段晚于默认阶段
+  priority: 1000           # 同阶段内请求越先执行，响应越后执行
   # 匹配规则：应用到所有服务
   matchRules:
     - configDisable: false
@@ -26,7 +24,8 @@ spec:
         - model-api-qwen3-plus-0
         - travel-assistant
       config:
-        log_level: info  # 必须在这里配置 log_level
+        log_level: info  # 可选
         collector_service_name: "log-collector.higress-system.svc.cluster.local"
         collector_port: 80
         collector_path: "/ingest"
+        # instance_id: "higress-gateway"  # 可选，不配置时会尝试从网关元数据读取

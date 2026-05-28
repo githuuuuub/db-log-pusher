@@ -17,8 +17,7 @@ spec:
     spec:
       containers:
       - name: collector
-        # 替换为你刚才构建的镜像
-        image: registry.cn-shanghai.aliyuncs.com/daofeng/log-collector:latest 
+        image: opensource-registry.cn-hangzhou.cr.aliyuncs.com/higress-group/log-collector:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080

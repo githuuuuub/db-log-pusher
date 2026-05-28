@@ -172,11 +172,10 @@ func onHttpResponseHeaders(ctx wrapper.HttpContext, config PluginConfig) types.A
 }
 
 // 4. 处理响应体 (也是发送日志的最佳时机)
-	// ⚠️ 重要提示：插件执行顺序
-	// 如果需要读取 ai-statistics 插件写入的 AI 日志，请确保：
-	// 1. 在 WasmPlugin 资源中，db-log-pusher 的 phase 应该晚于 ai-statistics
-	// 2. 或者在同一 phase 中，db-log-pusher 的 priority 应该低于 ai-statistics（数字越大优先级越高）
-	// 3. AI 日志的读取在 HTTP 回调中延迟到发送时才读取
+// 重要提示：如果需要读取 ai-statistics 写入的 AI 日志，db-log-pusher
+// 需要在请求过滤器链中位于 ai-statistics 之前，这样响应阶段才会晚于
+// ai-statistics 执行。不同 phase 下建议使用 AUTHN；同 phase 下 priority
+// 应高于 ai-statistics。
 func onHttpResponseBody(ctx wrapper.HttpContext, config PluginConfig, body []byte) types.Action {
 	// 1. 组装数据 - 参考 Envoy accessLogFormat 字段
 	reqHeaders, _ := ctx.GetContext("req_headers").([][2]string)
